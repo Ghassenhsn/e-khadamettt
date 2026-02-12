@@ -1,16 +1,14 @@
 package tn.ekhadamet.ekhadamet.Entities;
+
 import jakarta.persistence.*;
 import jakarta.validation.constraints.*;
 import lombok.*;
+import org.springframework.security.crypto.password.PasswordEncoder;
+
 import java.time.LocalDateTime;
 
-
 @Entity
-@Table(name = "citizen",
-        indexes = {
-                @Index(name = "idx_citizen_cin", columnList = "cin", unique = true),
-                @Index(name = "idx_citizen_email", columnList = "email")
-        })
+@Table(name = "citizen")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -22,53 +20,45 @@ public class Citizen {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @NotBlank
-    @Size(min = 8, max = 8)
-    @Column(nullable = false, unique = true, length = 8)
-    private String cin;
-
-    @NotBlank
+    @NotBlank(message = "First name (French) is required")
+    @Size(max = 100)
     @Column(name = "first_name_fr", nullable = false, length = 100)
     private String firstNameFr;
 
-    @NotBlank
+    @NotBlank(message = "Last name (French) is required")
+    @Size(max = 100)
     @Column(name = "last_name_fr", nullable = false, length = 100)
     private String lastNameFr;
 
-    @NotBlank
-    @Column(name = "first_name_ar", nullable = false, length = 100)
+    @NotBlank(message = "First name (Arabic) is required")
+    @Size(max = 100)
+    @Column(name = "first_name_ar", nullable = true, length = 100)
     private String firstNameAr;
 
-    @NotBlank
-    @Column(name = "last_name_ar", nullable = false, length = 100)
+    @NotBlank(message = "Last name (Arabic) is required")
+    @Size(max = 100)
+    @Column(name = "last_name_ar", nullable = true, length = 100)
     private String lastNameAr;
 
-    @NotBlank
-    @Column(name = "address_fr", columnDefinition = "TEXT", nullable = false)
-    private String addressFr;
-
-    @NotBlank
-    @Column(name = "address_ar", columnDefinition = "TEXT", nullable = false)
-    private String addressAr;
-
-    @Size(max = 15)
-    private String phone;
-
-    @Email
-    @Column(length = 150, unique = true)
+    @NotBlank(message = "Email is required")
+    @Email(message = "Invalid email format")
+    @Column(unique = true, nullable = false)
     private String email;
 
-    @NotNull
-    @Column(name = "password_hash", nullable = false)
-    private String passwordHash;
+    private boolean emailVerified = false;
+
+    @Column(name = "password_hash", length = 255)
+    private String passwordHash;  // nullable → will be filled at registration
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "role_id", nullable = false)
     private Role role;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "preferred_language", nullable = false)
-    private Language preferredLanguage;
+    @Column(name = "preferred_language", nullable = true)
+    private Language preferredLanguage = Language.FR;
+
+    private boolean active = true;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
@@ -85,5 +75,31 @@ public class Citizen {
     @PreUpdate
     protected void onUpdate() {
         this.updatedAt = LocalDateTime.now();
+    }
+
+    // ───────────────────────────────────────────────
+    // Password helpers (these were missing → main compilation error)
+    // ───────────────────────────────────────────────
+
+    public void setGeneratedPassword(String rawPassword, PasswordEncoder encoder) {
+        if (rawPassword == null || rawPassword.trim().isEmpty()) {
+            throw new IllegalArgumentException("Generated password cannot be empty");
+        }
+        this.passwordHash = encoder.encode(rawPassword);
+    }
+
+    public boolean checkPassword(String rawPassword, PasswordEncoder encoder) {
+        if (this.passwordHash == null) {
+            return false;
+        }
+        return encoder.matches(rawPassword, this.passwordHash);
+    }
+
+    public String getFullNameFr() {
+        return firstNameFr + " " + lastNameFr;
+    }
+
+    public String getFullNameAr() {
+        return firstNameAr + " " + lastNameAr;
     }
 }

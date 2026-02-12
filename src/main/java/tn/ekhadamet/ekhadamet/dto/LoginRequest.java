@@ -1,18 +1,21 @@
-// src/main/java/tn/ekhadamet/ekhadamet/dto/LoginRequestDTO.java
+// dto/LoginRequest.java
 package tn.ekhadamet.ekhadamet.dto;
 
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
-import lombok.*;
+import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 
-@Data
-@Builder
-@NoArgsConstructor
-@AllArgsConstructor
-@Setter
 @Getter
+@Setter
+@Data
 public class LoginRequest {
-    @NotBlank
-    private String phone; // or email
-    @NotBlank
+
+    @NotBlank(message = "Email is required")
+    @Email(message = "Invalid email format")
+    private String email;
+
+    @NotBlank(message = "Password is required")
     private String password;
 }

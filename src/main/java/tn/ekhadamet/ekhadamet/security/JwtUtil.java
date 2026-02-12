@@ -1,7 +1,6 @@
 package tn.ekhadamet.ekhadamet.security;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -17,30 +16,40 @@ public class JwtUtil {
     @Value("${jwt.secret}")
     private String secret;
 
-    // 24 hours validity
-    private final long expirationMs = 24 * 60 * 60 * 1000;
+    private final long normalExpirationMs = 24 * 60 * 60 * 1000;      // 24h
+    private final long setupExpirationMs   = 30 * 60 * 1000;          // 30 min for password setup
 
     private SecretKey getSigningKey() {
         return Keys.hmacShaKeyFor(secret.getBytes());
     }
 
-    /**
-     * Generates JWT token.
-     *
-     * @param identifier Usually the phone number (or CIN) used during login
-     * @param role       The role name (e.g. "CITIZEN")
-     * @param userId     The citizen's ID
-     */
-    public String generateToken(String identifier, String role, Long userId) {
+    // Normal auth token
+    public String generateToken(String email, String role, Long userId) {
         Map<String, Object> claims = new HashMap<>();
         claims.put("role", role);
+        claims.put("userId", userId);
+        claims.put("type", "auth");
+
+        return Jwts.builder()
+                .claims(claims)
+                .subject(email)                             // ← email as subject
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + normalExpirationMs))
+                .signWith(getSigningKey())
+                .compact();
+    }
+
+    // Short-lived token for password setup (if you still use it)
+    public String generatePasswordSetupToken(Long userId, String email) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("type", "password_setup");
         claims.put("userId", userId);
 
         return Jwts.builder()
                 .claims(claims)
-                .subject(identifier)                    // ← phone number (or CIN)
+                .subject(email)                             // ← email
                 .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + expirationMs))
+                .expiration(new Date(System.currentTimeMillis() + setupExpirationMs))
                 .signWith(getSigningKey())
                 .compact();
     }
@@ -53,17 +62,8 @@ public class JwtUtil {
                 .getPayload();
     }
 
-    /**
-     * Returns the identifier from the token (phone or CIN depending on what you set as subject)
-     */
-    public String extractIdentifier(String token) {
+    public String extractEmail(String token) {
         return extractAllClaims(token).getSubject();
-    }
-
-    // Alias if some old code still calls extractUsername
-    @Deprecated
-    public String extractUsername(String token) {
-        return extractIdentifier(token);
     }
 
     public String extractRole(String token) {
@@ -75,29 +75,44 @@ public class JwtUtil {
     }
 
     public boolean isTokenExpired(String token) {
-        return extractAllClaims(token).getExpiration().before(new Date());
+        try {
+            return extractAllClaims(token).getExpiration().before(new Date());
+        } catch (Exception e) {
+            return true;
+        }
     }
 
-    /**
-     * Validates token against the expected identifier (phone/CIN)
-     */
-    public boolean validateToken(String token, String expectedIdentifier) {
+    public boolean validateToken(String token, String expectedEmail) {
         try {
-            return expectedIdentifier.equals(extractIdentifier(token)) && !isTokenExpired(token);
+            return expectedEmail.equals(extractEmail(token)) && !isTokenExpired(token);
         } catch (Exception e) {
             return false;
         }
     }
 
-    /**
-     * Convenience method: check if token is valid at all (no specific user check)
-     */
-    public boolean isTokenValid(String token) {
+    // Password setup specific
+    public boolean isPasswordSetupTokenValid(String token) {
         try {
-            extractAllClaims(token);
-            return !isTokenExpired(token);
+            Claims claims = extractAllClaims(token);
+            return "password_setup".equals(claims.get("type", String.class)) && !isTokenExpired(token);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    public Long getUserIdFromPasswordSetupToken(String token) {
+        try {
+            return extractAllClaims(token).get("userId", Long.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    public String getEmailFromPasswordSetupToken(String token) {
+        try {
+            return extractAllClaims(token).getSubject();
+        } catch (Exception e) {
+            return null;
         }
     }
 }

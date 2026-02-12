@@ -1,220 +1,185 @@
 package tn.ekhadamet.ekhadamet.controllers;
 
-import tn.ekhadamet.ekhadamet.Entities.Language;
-import tn.ekhadamet.ekhadamet.dto.LoginRequest;
-import tn.ekhadamet.ekhadamet.dto.LoginResponse;
-import tn.ekhadamet.ekhadamet.dto.OtpVerifyRequest;
-import tn.ekhadamet.ekhadamet.dto.RegisterRequest;
+import jakarta.transaction.Transactional;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.web.bind.annotation.*;
 import tn.ekhadamet.ekhadamet.Entities.Citizen;
+import tn.ekhadamet.ekhadamet.Entities.Language;
 import tn.ekhadamet.ekhadamet.Entities.Role;
 import tn.ekhadamet.ekhadamet.Entities.RoleName;
+import tn.ekhadamet.ekhadamet.dto.*;
 import tn.ekhadamet.ekhadamet.repository.CitizenRepository;
 import tn.ekhadamet.ekhadamet.repository.RoleRepository;
 import tn.ekhadamet.ekhadamet.security.JwtUtil;
+import tn.ekhadamet.ekhadamet.serviceImplement.EmailService;
 import tn.ekhadamet.ekhadamet.services.OtpService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
+
+import static org.springframework.http.ResponseEntity.*;
 
 @RestController
 @RequestMapping("/auth")
-@CrossOrigin(origins = {"http://localhost:4200", "http://localhost:4300"}, allowCredentials = "true")
+@CrossOrigin(
+        origins = {"http://localhost:4200", "http://localhost:4300"},
+        allowCredentials = "true",
+        allowedHeaders = "*",
+        methods = {RequestMethod.GET, RequestMethod.POST, RequestMethod.OPTIONS}
+)
+@RequiredArgsConstructor
 public class AuthController {
 
-    @Autowired private CitizenRepository citizenRepo;
-    @Autowired private RoleRepository roleRepo;
-    @Autowired private JwtUtil jwtUtil;
-    @Autowired private OtpService otpService;
+    private static final Logger logger = LoggerFactory.getLogger(AuthController.class);
 
-    // ────────────────────────────────────────────────
-    // OLD PASSWORD LOGIN – keep only if you still want both methods
-    // Comment out or remove if you want OTP-only login
-    // ────────────────────────────────────────────────
-    @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
-        if (request.getPhone() == null || request.getPassword() == null) {
-            return ResponseEntity.badRequest().body("Phone and password required");
-        }
+    private final CitizenRepository citizenRepo;
+    private final RoleRepository roleRepo;
+    private final JwtUtil jwtUtil;
+    private final OtpService otpService;
+    private final PasswordEncoder passwordEncoder;
+    private final EmailService emailService;
 
-        Optional<Citizen> citizenOpt = citizenRepo.findByPhone(request.getPhone().trim());
-
-        if (citizenOpt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body("Invalid phone number or password");
-        }
-
-        Citizen citizen = citizenOpt.get();
-
-        // If you want to keep password login for admins or fallback
-        // if (!passwordEncoder.matches(request.getPassword(), citizen.getPasswordHash())) {
-        //     return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-        //             .body("Invalid phone number or password");
-        // }
-
-        // If OTP-only → you can remove the password check above completely
-
-        String roleName = citizen.getRole().getRoleName().name();
-
-        String token = jwtUtil.generateToken(citizen.getPhone(), roleName, citizen.getId());
-
-        LoginResponse response = new LoginResponse();
-        response.setToken(token);
-        response.setUserId(citizen.getId());
-        response.setUsername(citizen.getPhone());
-        response.setRole(roleName);
-
-        return ResponseEntity.ok(response);
-    }
-
-    // ────────────────────────────────────────────────
-    // REGISTER – now without fixed password (OTP will be used for login)
-    // ────────────────────────────────────────────────
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
-        String phone = request.getPhone();
-        if (phone == null || phone.trim().isEmpty()) {
-            return ResponseEntity.badRequest().body("Phone number is required");
-        }
-        phone = phone.trim();
+    @Transactional
+    public ResponseEntity<?> register(@Valid @RequestBody RegisterRequest request) {
+        logger.info("Registration attempt for email: {}", request.getEmail());
 
-        if (citizenRepo.existsByPhone(phone)) {
-            return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body("Phone number already registered");
+        String email = request.getEmail().trim().toLowerCase();
+
+        if (citizenRepo.existsByEmail(email)) {
+            return status(HttpStatus.CONFLICT).body(Map.of("error", "Email already registered"));
         }
 
-        if (request.getCin() == null || citizenRepo.existsByCin(request.getCin())) {
-            return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body("CIN is required or already registered");
-        }
-
-        if (request.getEmail() != null && citizenRepo.existsByEmail(request.getEmail())) {
-            return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body("Email already in use");
-        }
-
-        Citizen citizen = new Citizen();
-        citizen.setCin(request.getCin());
-        citizen.setFirstNameFr(request.getFirstNameFr());
-        citizen.setLastNameFr(request.getLastNameFr());
-        citizen.setFirstNameAr(request.getFirstNameAr());
-        citizen.setLastNameAr(request.getLastNameAr());
-        citizen.setAddressFr(request.getAddressFr());
-        citizen.setAddressAr(request.getAddressAr());
-        citizen.setPhone(phone);
-        citizen.setEmail(request.getEmail());
-        // No passwordHash – OTP will be used instead
-        // citizen.setPasswordHash(null);  // or leave null
+        Language lang = "ar".equalsIgnoreCase(request.getPreferredLanguage()) ? Language.AR : Language.FR;
 
         Role citizenRole = (Role) roleRepo.findByRoleName(RoleName.CITIZEN)
-                .orElseThrow(() -> new RuntimeException("CITIZEN role not found in database"));
+                .orElseThrow(() -> new IllegalStateException("CITIZEN role not found in database"));
 
-        citizen.setRole(citizenRole);
+        // Generate random password (12 characters example)
+        String rawPassword = RandomStringUtils.randomAlphanumeric(10).toUpperCase() +
+                RandomStringUtils.random(2, "!@#$%^&*") +
+                RandomStringUtils.randomNumeric(2);
 
-        Language preferredLang = Language.FR;
-        if (request.getPreferredLanguage() != null && !request.getPreferredLanguage().trim().isEmpty()) {
-            String langInput = request.getPreferredLanguage().trim().toUpperCase();
-            try {
-                preferredLang = Language.valueOf(langInput);
-            } catch (IllegalArgumentException ignored) {
-                // keep default FR
-            }
-        }
-        citizen.setPreferredLanguage(preferredLang);
+        Citizen citizen = Citizen.builder()
+                .firstNameFr(request.getFirstNameFr().trim())
+                .lastNameFr(request.getLastNameFr().trim())
+                .firstNameAr(StringUtils.defaultIfBlank(request.getFirstNameAr(), request.getFirstNameFr()).trim())
+                .lastNameAr(StringUtils.defaultIfBlank(request.getLastNameAr(), request.getLastNameFr()).trim())
+                .email(email)
+                .preferredLanguage(lang)
+                .role(citizenRole)
+                .active(true)
+                .build();
 
-        Citizen saved = citizenRepo.save(citizen);
+        citizen.setGeneratedPassword(rawPassword, passwordEncoder);
+        citizenRepo.save(citizen);
 
-        // Optional: auto-generate first OTP after registration
-        // otpService.generateOtp(phone);
+        // Send email with temporary password
+        String subject = lang == Language.FR
+                ? "eKhadamet – Vos identifiants temporaires"
+                : "eKhadamet – بيانات الدخول المؤقتة";
 
-        LoginResponse response = new LoginResponse();
-        response.setUserId(saved.getId());
-        response.setUsername(saved.getPhone());
-        response.setRole("CITIZEN");
-        // No token here – user must request OTP to login
+        String body = lang == Language.FR
+                ? "Bonjour,\n\nVotre compte a été créé.\n\nMot de passe temporaire : " + rawPassword + "\n\n" +
+                "Utilisez ce mot de passe avec le code OTP qui vous sera envoyé lors de la connexion.\n\n" +
+                "Cordialement,\nÉquipe eKhadamet"
+                : "مرحبا،\n\nتم إنشاء حسابك.\n\nكلمة المرور المؤقتة: " + rawPassword + "\n\n" +
+                "استخدم كلمة المرور هذه مع رمز OTP الذي سيتم إرساله عند تسجيل الدخول.\n\n" +
+                "تحياتنا،\nفريق eKhadamet";
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        emailService.sendSimpleEmail(email, subject, body);
+
+        return ok(Map.of(
+                "message", lang == Language.FR
+                        ? "Compte créé. Vérifiez votre email pour le mot de passe temporaire."
+                        : "تم إنشاء الحساب. تحقق من بريدك الإلكتروني للحصول على كلمة المرور المؤقتة.",
+                "email", email
+        ));
     }
 
-    // ────────────────────────────────────────────────
-    // OTP REQUEST – already good
-    // ────────────────────────────────────────────────
-    @PostMapping("/otp/request")
-    public ResponseEntity<?> requestOtp(@RequestBody Map<String, String> body) {
-        String phone = body.get("phone");
-        if (phone == null || phone.trim().isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Phone required"));
+    // ───────────────────────────────────────────────
+    // Login Step 1: Verify password → send OTP
+    // ───────────────────────────────────────────────
+    @PostMapping("/login/password")
+    public ResponseEntity<?> loginWithPassword(@Valid @RequestBody PasswordLoginRequest request) {
+        logger.info("Password login attempt for email: {}", request.getEmail());
+
+        String email = request.getEmail().trim().toLowerCase();
+
+        Citizen citizen = citizenRepo.findByEmail(email)
+                .orElse(null);
+
+        if (citizen == null) {
+            return status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", "No account found with this email"));
         }
 
-        phone = phone.trim();
-
-        try {
-            String otp = otpService.generateOtp(phone);
-            return ResponseEntity.ok(Map.of(
-                    "message", "OTP sent to your phone",
-                    "debugOtp", otp  // REMOVE in production!
-            ));
-        } catch (Exception e) {
-            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        // Check password
+        if (!citizen.checkPassword(request.getPassword(), passwordEncoder)) {
+            return status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", "Incorrect password"));
         }
+
+        // Password is correct → send OTP
+        otpService.sendOtp(email, citizen.getPreferredLanguage(), "login");
+
+        String message = citizen.getPreferredLanguage() == Language.FR
+                ? "Mot de passe correct. Un code de vérification a été envoyé à votre email."
+                : "كلمة المرور صحيحة. تم إرسال رمز التحقق إلى بريدك الإلكتروني.";
+
+        return ok(Map.of(
+                "message", message,
+                "email", email,
+                "step", "otp_required"
+        ));
     }
 
-    // ────────────────────────────────────────────────
-    // OTP VERIFY & LOGIN – already good
-    // ────────────────────────────────────────────────
-    @PostMapping("/otp/verify")
-    public ResponseEntity<?> verifyOtpAndLogin(@RequestBody OtpVerifyRequest request) {
-        String phone = request.getPhone();
-        String code = request.getCode();
+    // ───────────────────────────────────────────────
+    // Login Step 2: Verify OTP → issue JWT token
+    // ───────────────────────────────────────────────
+    @PostMapping("/login/otp")
+    @Transactional
+    public ResponseEntity<?> loginWithOtp(@Valid @RequestBody OtpVerifyRequest request) {
+        logger.info("OTP verification attempt for email: {}, code: {}", request.getEmail(), request.getCode());
 
-        if (phone == null || code == null || phone.trim().isEmpty() || code.trim().isEmpty()) {
-            return ResponseEntity.badRequest().body("Phone and code are required");
+        String email = request.getEmail().trim().toLowerCase();
+
+        Citizen citizen = citizenRepo.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("Account not found"));
+
+        boolean isValid = otpService.verifyOtp(email, request.getCode(), "login");
+
+        if (!isValid) {
+            return status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("error", "Invalid or expired OTP code"));
         }
 
-        boolean valid = otpService.validateOtp(phone.trim(), code.trim());
-
-        if (!valid) {
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                    .body("Invalid or expired OTP");
+        // Mark email as verified if this is the first successful login
+        if (!citizen.isEmailVerified()) {
+            citizen.setEmailVerified(true);
+            citizenRepo.save(citizen);
+            logger.info("Email verified during first login for: {}", email);
         }
 
-        Citizen citizen = citizenRepo.findByPhone(phone.trim())
-                .orElseThrow(() -> new RuntimeException("Citizen not found after OTP validation"));
-
-        String roleName = citizen.getRole().getRoleName().name();
-        String token = jwtUtil.generateToken(citizen.getPhone(), roleName, citizen.getId());
+        // Generate JWT
+        String token = jwtUtil.generateToken(
+                citizen.getEmail(),
+                citizen.getRole().getRoleName().name(),
+                citizen.getId()
+        );
 
         LoginResponse response = new LoginResponse();
         response.setToken(token);
         response.setUserId(citizen.getId());
-        response.setUsername(citizen.getPhone());
-        response.setRole(roleName);
+        response.setUsername(citizen.getEmail());
+        response.setRole(citizen.getRole().getRoleName().name());
 
-        return ResponseEntity.ok(response);
-    }
-
-    // ────────────────────────────────────────────────
-    // Debug endpoint – keep for testing
-    // ────────────────────────────────────────────────
-    @GetMapping("/debug/whoami")
-    public Map<String, Object> whoAmI() {
-        var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
-
-        Map<String, Object> map = new HashMap<>();
-        if (auth == null) {
-            map.put("status", "not authenticated");
-            return map;
-        }
-
-        map.put("status", "authenticated");
-        map.put("name", auth.getName());
-        map.put("principal", auth.getPrincipal().toString());
-        map.put("authorities", auth.getAuthorities().stream().map(Object::toString).toList());
-        map.put("isAuthenticated", auth.isAuthenticated());
-        return map;
-    }
-}
+        return ok(response);
+    }}

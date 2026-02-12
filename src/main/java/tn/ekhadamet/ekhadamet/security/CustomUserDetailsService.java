@@ -9,7 +9,7 @@ import org.springframework.stereotype.Service;
 import tn.ekhadamet.ekhadamet.Entities.Citizen;
 import tn.ekhadamet.ekhadamet.repository.CitizenRepository;
 
-import java.util.List;
+import java.util.Collections;
 
 @Service
 public class CustomUserDetailsService implements UserDetailsService {
@@ -21,21 +21,30 @@ public class CustomUserDetailsService implements UserDetailsService {
     }
 
     @Override
-    public UserDetails loadUserByUsername(String identifier) throws UsernameNotFoundException {
-        System.out.println("Loading user by identifier: " + identifier);
+    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
+        System.out.println("Loading user by email: " + email);
 
-        Citizen citizen = citizenRepository.findByPhone(identifier)
-                .orElseThrow(() -> new UsernameNotFoundException("No citizen found with phone: " + identifier));
+        // Use case-insensitive lookup (very common for emails)
+        Citizen citizen = citizenRepository.findByEmailIgnoreCase(email)
+                .orElseThrow(() -> new UsernameNotFoundException("No citizen found with email: " + email));
 
-        String roleName = citizen.getRole().getRoleName().name(); // e.g. "CITIZEN"
-        String authority = "ROLE_" + roleName;                    // → "ROLE_CITIZEN"
+        if (!citizen.isEmailVerified()) {
+            throw new UsernameNotFoundException("Email not verified yet: " + email);
+        }
 
-        System.out.println("User loaded → authorities: " + authority);
+        if (!citizen.isActive()) {
+            throw new UsernameNotFoundException("Account is inactive: " + email);
+        }
+
+        String roleName = citizen.getRole().getRoleName().name(); // e.g. CITIZEN
+        String authority = "ROLE_" + roleName;                    // → ROLE_CITIZEN
+
+        System.out.println("User loaded → email: " + email + ", authority: " + authority);
 
         return User.builder()
-                .username(citizen.getPhone())  // must match JWT subject
+                .username(citizen.getEmail())               // ← now email (must match JWT subject)
                 .password(citizen.getPasswordHash())
-                .authorities(List.of(new SimpleGrantedAuthority(authority)))
+                .authorities(Collections.singletonList(new SimpleGrantedAuthority(authority)))
                 .accountExpired(false)
                 .accountLocked(false)
                 .credentialsExpired(false)
